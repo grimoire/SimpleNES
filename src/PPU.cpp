@@ -102,18 +102,13 @@ namespace sn
                     {
                         for (int i = 0; i < 8; ++i){
                             Byte spr_count = m_spriteCount[i];
-                            // if(i==0xff)
-                            //     break;
-
+                            
                             if(spr_count != 0)
                                 continue;
                             
                             Byte attribute = m_spriteAttributeLatch[i];
                             sprColor |= m_spriteShifts[i * 2] & 0x1;
                             sprColor |= (m_spriteShifts[i * 2 + 1] & 0x1) << 1;
-
-                            m_spriteShifts[i * 2] >>= 1;
-                            m_spriteShifts[i * 2 + 1] >>= 1;
 
                             if (!(sprOpaque = sprColor))
                             {
@@ -143,6 +138,11 @@ namespace sn
                                 break;
                             if(spr_count != 0)
                                 m_spriteCount[i] -= 1;
+                            else
+                            {
+                                m_spriteShifts[i * 2] >>= 1;
+                                m_spriteShifts[i * 2 + 1] >>= 1;
+                            }
                         }
                     }
 
