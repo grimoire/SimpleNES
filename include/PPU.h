@@ -45,12 +45,20 @@ namespace sn
             Byte readOAM(Byte addr);
             void writeOAM(Byte addr, Byte value);
             Byte read(Address addr);
+            void fetchBackground();
+            void updateShift();
+            void updateDataAddress();
+            void fetchSprite();
             PictureBus &m_bus;
             VirtualScreen &m_screen;
 
             std::function<void(void)> m_vblankCallback;
 
             std::vector<Byte> m_spriteMemory;
+            std::vector<Byte> m_secondarySpriteMemory;
+            std::vector<Byte> m_spriteShifts;
+            std::vector<Byte> m_spriteAttributeLatch;
+            std::vector<Byte> m_spriteCount;
 
             std::vector<Byte> m_scanlineSprites;
 
@@ -76,6 +84,23 @@ namespace sn
             Byte m_dataBuffer;
 
             Byte m_spriteDataAddress;
+
+            Byte m_attributeLowShift;
+            Byte m_attributeHighShift;
+            Address m_patternLowShift;
+            Address m_patternHighShift;
+
+            Byte m_nameTableLatch;
+            Byte m_attributeLatch;
+            Byte m_attributeLowLatch;
+            Byte m_attributeHighLatch;
+            Byte m_patternLowLatch;
+            Byte m_patternHighLatch;
+
+            Byte m_patternLowOut;
+            Byte m_patternHighOut;
+            Byte m_attributeLowOut;
+            Byte m_attributeHighOut;
 
             //Setup flags and variables
             bool m_longSprites;

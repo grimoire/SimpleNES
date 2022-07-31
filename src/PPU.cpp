@@ -1,4 +1,5 @@
 #include "PPU.h"
+#include "Cartridge.h"
 #include "Log.h"
 
 namespace sn
@@ -7,6 +8,10 @@ namespace sn
         m_bus(bus),
         m_screen(screen),
         m_spriteMemory(64 * 4),
+        m_secondarySpriteMemory(8 * 4),
+        m_spriteShifts(8 * 2),
+        m_spriteAttributeLatch(8),
+        m_spriteCount(8),
         m_pictureBuffer(ScanlineVisibleDots, std::vector<sf::Color>(VisibleScanlines, sf::Color::Magenta))
     {}
 
@@ -16,6 +21,9 @@ namespace sn
         m_showBackground = m_showSprites = m_evenFrame = m_firstWrite = true;
         m_bgPage = m_sprPage = Low;
         m_dataAddress = m_cycle = m_scanline = m_spriteDataAddress = m_fineXScroll = m_tempAddress = 0;
+        m_attributeLowShift = m_attributeHighShift = m_patternLowShift = m_patternHighShift = 0;
+        m_nameTableLatch = m_attributeLatch = m_patternLowLatch = m_patternHighLatch = 0;
+        m_attributeLowLatch = m_attributeHighLatch = 0;
         //m_baseNameTable = 0x2000;
         m_dataAddrIncrement = 1;
         m_pipelineState = PreRender;
@@ -35,18 +43,19 @@ namespace sn
             case PreRender:
                 if (m_cycle == 1)
                     m_vblank = m_sprZeroHit = false;
-                else if (m_cycle == ScanlineVisibleDots + 2 && m_showBackground && m_showSprites)
-                {
-                    //Set bits related to horizontal position
-                    m_dataAddress &= ~0x41f; //Unset horizontal bits
-                    m_dataAddress |= m_tempAddress & 0x41f; //Copy
-                }
-                else if (m_cycle > 280 && m_cycle <= 304 && m_showBackground && m_showSprites)
+                else if (m_cycle >= 280 && m_cycle <= 304 && m_showBackground && m_showSprites)
                 {
                     //Set vertical bits
                     m_dataAddress &= ~0x7be0; //Unset bits related to horizontal
                     m_dataAddress |= m_tempAddress & 0x7be0; //Copy
                 }
+                
+                if(m_cycle>=321){
+                    updateShift();
+                    fetchBackground();
+                    updateDataAddress();
+                }
+
 //                 if (m_cycle > 257 && m_cycle < 320)
 //                     m_spriteDataAddress = 0;
                //if rendering is on, every other frame is one cycle shorter
@@ -57,6 +66,10 @@ namespace sn
                 }
                 break;
             case Render:
+                updateShift();
+                fetchBackground();
+                updateDataAddress();
+                fetchSprite();
                 if (m_cycle > 0 && m_cycle <= ScanlineVisibleDots)
                 {
                     Byte bgColor = 0, sprColor = 0;
@@ -68,84 +81,39 @@ namespace sn
 
                     if (m_showBackground)
                     {
-                        auto x_fine = (m_fineXScroll + x) % 8;
                         if (!m_hideEdgeBackground || x >= 8)
                         {
-                            //fetch tile
-                            auto addr = 0x2000 | (m_dataAddress & 0x0FFF); //mask off fine y
-                            //auto addr = 0x2000 + x / 8 + (y / 8) * (ScanlineVisibleDots / 8);
-                            Byte tile = read(addr);
-
-                            //fetch pattern
-                            //Each pattern occupies 16 bytes, so multiply by 16
-                            addr = (tile * 16) + ((m_dataAddress >> 12/*y % 8*/) & 0x7); //Add fine y
-                            addr |= m_bgPage << 12; //set whether the pattern is in the high or low page
                             //Get the corresponding bit determined by (8 - x_fine) from the right
-                            bgColor = (read(addr) >> (7 ^ x_fine)) & 1; //bit 0 of palette entry
-                            bgColor |= ((read(addr + 8) >> (7 ^ x_fine)) & 1) << 1; //bit 1
+                            // bgColor = (m_patternLowShift >> x_fine) & 1; //bit 0 of palette entry
+                            // bgColor |= ((m_patternHighShift >> x_fine) & 1) << 1; //bit 1
+                            bgColor = m_patternLowOut; //bit 0 of palette entry
+                            bgColor |= m_patternHighOut << 1; //bit 1
 
                             bgOpaque = bgColor; //flag used to calculate final pixel with the sprite pixel
 
                             //fetch attribute and calculate higher two bits of palette
-                            addr = 0x23C0 | (m_dataAddress & 0x0C00) | ((m_dataAddress >> 4) & 0x38)
-                                        | ((m_dataAddress >> 2) & 0x07);
-                            auto attribute = read(addr);
-                            int shift = ((m_dataAddress >> 4) & 4) | (m_dataAddress & 2);
                             //Extract and set the upper two bits for the color
-                            bgColor |= ((attribute >> shift) & 0x3) << 2;
-                        }
-                        //Increment/wrap coarse X
-                        if (x_fine == 7)
-                        {
-                            if ((m_dataAddress & 0x001F) == 31) // if coarse X == 31
-                            {
-                                m_dataAddress &= ~0x001F;          // coarse X = 0
-                                m_dataAddress ^= 0x0400;           // switch horizontal nametable
-                            }
-                            else
-                                m_dataAddress += 1;                // increment coarse X
+                            bgColor |= m_attributeLowOut << 2;
+                            bgColor |= m_attributeHighOut << 3;
                         }
                     }
 
                     if (m_showSprites && (!m_hideEdgeSprites || x >= 8))
                     {
-                        for (auto i : m_scanlineSprites)
-                        {
-                            Byte spr_x =     m_spriteMemory[i * 4 + 3];
+                        for (int i = 0; i < 8; ++i){
+                            Byte spr_count = m_spriteCount[i];
+                            // if(i==0xff)
+                            //     break;
 
-                            if (0 > x - spr_x || x - spr_x >= 8)
+                            if(spr_count != 0)
                                 continue;
+                            
+                            Byte attribute = m_spriteAttributeLatch[i];
+                            sprColor |= m_spriteShifts[i * 2] & 0x1;
+                            sprColor |= (m_spriteShifts[i * 2 + 1] & 0x1) << 1;
 
-                            Byte spr_y     = m_spriteMemory[i * 4 + 0] + 1,
-                                 tile      = m_spriteMemory[i * 4 + 1],
-                                 attribute = m_spriteMemory[i * 4 + 2];
-
-                            int length = (m_longSprites) ? 16 : 8;
-
-                            int x_shift = (x - spr_x) % 8, y_offset = (y - spr_y) % length;
-
-                            if ((attribute & 0x40) == 0) //If NOT flipping horizontally
-                                x_shift ^= 7;
-                            if ((attribute & 0x80) != 0) //IF flipping vertically
-                                y_offset ^= (length - 1);
-
-                            Address addr = 0;
-
-                            if (!m_longSprites)
-                            {
-                                addr = tile * 16 + y_offset;
-                                if (m_sprPage == High) addr += 0x1000;
-                            }
-                            else //8x16 sprites
-                            {
-                                //bit-3 is one if it is the bottom tile of the sprite, multiply by two to get the next pattern
-                                y_offset = (y_offset & 7) | ((y_offset & 8) << 1);
-                                addr = (tile >> 1) * 32 + y_offset;
-                                addr |= (tile & 1) << 12; //Bank 0x1000 if bit-0 is high
-                            }
-
-                            sprColor |= (read(addr) >> (x_shift)) & 1; //bit 0 of palette entry
-                            sprColor |= ((read(addr + 8) >> (x_shift)) & 1) << 1; //bit 1
+                            m_spriteShifts[i * 2] >>= 1;
+                            m_spriteShifts[i * 2 + 1] >>= 1;
 
                             if (!(sprOpaque = sprColor))
                             {
@@ -166,6 +134,16 @@ namespace sn
 
                             break; //Exit the loop now since we've found the highest priority sprite
                         }
+
+                        // update sprite x count
+                        for(int i = 0; i < 8; ++i)
+                        {   
+                            auto spr_count = m_spriteCount[i];
+                            if(spr_count == 0xff)
+                                break;
+                            if(spr_count != 0)
+                                m_spriteCount[i] -= 1;
+                        }
                     }
 
                     Byte paletteAddr = bgColor;
@@ -180,70 +158,12 @@ namespace sn
 //                     m_screen.setPixel(x, y, sf::Color(colors[m_bus.readPalette(paletteAddr)]));
                     m_pictureBuffer[x][y] = sf::Color(colors[m_bus.readPalette(paletteAddr)]);
                 }
-                else if (m_cycle == ScanlineVisibleDots + 1 && m_showBackground)
-                {
-                    //Shamelessly copied from nesdev wiki
-                    if ((m_dataAddress & 0x7000) != 0x7000)  // if fine Y < 7
-                        m_dataAddress += 0x1000;              // increment fine Y
-                    else
-                    {
-                        m_dataAddress &= ~0x7000;             // fine Y = 0
-                        int y = (m_dataAddress & 0x03E0) >> 5;    // let y = coarse Y
-                        if (y == 29)
-                        {
-                            y = 0;                                // coarse Y = 0
-                            m_dataAddress ^= 0x0800;              // switch vertical nametable
-                        }
-                        else if (y == 31)
-                            y = 0;                                // coarse Y = 0, nametable not switched
-                        else
-                            y += 1;                               // increment coarse Y
-                        m_dataAddress = (m_dataAddress & ~0x03E0) | (y << 5);
-                                                                // put coarse Y back into m_dataAddress
-                    }
-                }
-                else if (m_cycle == ScanlineVisibleDots + 2 && m_showBackground && m_showSprites)
-                {
-                    //Copy bits related to horizontal position
-                    m_dataAddress &= ~0x41f;
-                    m_dataAddress |= m_tempAddress & 0x41f;
-                }
 
 //                 if (m_cycle > 257 && m_cycle < 320)
 //                     m_spriteDataAddress = 0;
 
-                // add IRQ support for MMC3
-                if(m_cycle==260 && m_showBackground && m_showSprites){
-                    m_bus.scanlineIRQ();
-                }
-
                 if (m_cycle >= ScanlineEndCycle)
                 {
-                    //Find and index sprites that are on the next Scanline
-                    //This isn't where/when this indexing, actually copying in 2C02 is done
-                    //but (I think) it shouldn't hurt any games if this is done here
-
-                    m_scanlineSprites.resize(0);
-
-                    int range = 8;
-                    if (m_longSprites)
-                        range = 16;
-
-                    std::size_t j = 0;
-                    for (std::size_t i = m_spriteDataAddress / 4; i < 64; ++i)
-                    {
-                        auto diff = (m_scanline - m_spriteMemory[i * 4]);
-                        if (0 <= diff && diff < range)
-                        {
-                            m_scanlineSprites.push_back(i);
-                            ++j;
-                            if (j >= 8)
-                            {
-                                break;
-                            }
-                        }
-                    }
-
                     ++m_scanline;
                     m_cycle = 0;
                 }
@@ -431,7 +351,224 @@ namespace sn
 
     Byte PPU::read(Address addr)
     {
+        // add IRQ support for MMC3
+        static Address oldA13 = 0;
+
+        if(oldA13 == 0 && (addr & 0x1000))
+        {
+            m_bus.scanlineIRQ();
+        }
+        oldA13 = (addr & 0x1000);
+
         return m_bus.read(addr);
     }
 
+    void PPU::fetchBackground(){
+        
+        // fetch background
+        bool background_cycle = (m_cycle>=1 && m_cycle<=ScanlineVisibleDots) || (m_cycle>=321 && m_cycle<=ScanlineEndCycle);
+        if( background_cycle && m_showBackground){
+            int fetch_cycle = m_cycle&0x7;
+            if(fetch_cycle == 0x1){
+                // read nametable
+                Address addr = 0x2000 | (m_dataAddress & 0x0FFF);
+                auto data = read(addr);
+                m_nameTableLatch = data;
+            }
+            else if(fetch_cycle == 0x3){
+                Address addr = 0x23C0 | (m_dataAddress & 0x0C00) | ((m_dataAddress >> 4) & 0x38)
+                                | ((m_dataAddress >> 2) & 0x07);
+                auto data = read(addr);
+                int shift = ((m_dataAddress >> 4) & 4) | (m_dataAddress & 2);
+                m_attributeLatch = (data >> shift) & 0x3;
+            }
+            else if(fetch_cycle == 0x5){
+                //Each pattern occupies 16 bytes, so multiply by 16
+                Address addr = (m_nameTableLatch * 16) + ((m_dataAddress >> 12/*y % 8*/) & 0x7); //Add fine y
+                addr |= m_bgPage << 12; //set whether the pattern is in the high or low page
+                auto data = read(addr);
+                //Get the corresponding bit determined by (8 - x_fine) from the right
+                m_patternLowLatch = data;
+            }
+            else if(fetch_cycle == 0x7){
+                Address addr = (m_nameTableLatch * 16) + ((m_dataAddress >> 12/*y % 8*/) & 0x7); //Add fine y
+                addr |= m_bgPage << 12; //set whether the pattern is in the high or low page
+                auto data = read(addr+8);
+                //Get the corresponding bit determined by (8 - x_fine) from the right
+                m_patternHighLatch = data;
+            }
+        }
+    }
+
+    Byte bitReverse(Byte b) {
+        b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+        b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+        b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+        return b;
+    }
+
+    void PPU::updateShift()
+    {
+        // reload
+        bool background_cycle = (m_cycle >= 9 && m_cycle <= ScanlineVisibleDots + 1) || (m_cycle >= 329 && m_cycle <= 337);
+        if(background_cycle && m_showBackground && ((m_cycle&0x7) == 0x1)){
+            m_patternLowShift = (m_patternLowShift & 0xff)|(Address(bitReverse(m_patternLowLatch)) << 8);
+            m_patternHighShift = (m_patternHighShift & 0xff)|(Address(bitReverse(m_patternHighLatch)) << 8);
+            m_attributeLowLatch = m_attributeLatch & 0x1;
+            m_attributeHighLatch =  (m_attributeLatch>>1) & 0x1;
+        }
+
+        background_cycle = (m_cycle >= 1 && m_cycle <= ScanlineVisibleDots) || (m_cycle >= 321 && m_cycle <= 336);
+        if(background_cycle && m_showBackground){
+            m_patternLowOut = (m_patternLowShift >> m_fineXScroll) & 1; //bit 0 of palette entry
+            m_patternHighOut = (m_patternHighShift >> m_fineXScroll) & 1; //bit 1
+            //fetch attribute and calculate higher two bits of palette
+            //Extract and set the upper two bits for the color
+            m_attributeLowOut = (m_attributeLowShift >> m_fineXScroll) & 1;
+            m_attributeHighOut = (m_attributeHighShift >> m_fineXScroll) & 1;
+
+            m_patternLowShift >>= 1;
+            m_patternHighShift >>= 1;
+            m_attributeLowShift = (m_attributeLowLatch << 7) | (m_attributeLowShift >> 1);
+            m_attributeHighShift = (m_attributeHighLatch << 7) | (m_attributeHighShift >> 1);
+        }
+
+    }
+
+    void PPU::updateDataAddress(){
+        bool valid_cycle = (m_cycle>=8 && m_cycle<=ScanlineVisibleDots + 1) || (m_cycle>=328 && m_cycle<=336);
+        if(valid_cycle && m_showBackground){
+            if(m_cycle == ScanlineVisibleDots){
+                //Shamelessly copied from nesdev wiki
+                if ((m_dataAddress & 0x7000) != 0x7000)  // if fine Y < 7
+                    m_dataAddress += 0x1000;              // increment fine Y
+                else
+                {
+                    m_dataAddress &= ~0x7000;             // fine Y = 0
+                    int y = (m_dataAddress & 0x03E0) >> 5;    // let y = coarse Y
+                    if (y == 29)
+                    {
+                        y = 0;                                // coarse Y = 0
+                        m_dataAddress ^= 0x0800;              // switch vertical nametable
+                    }
+                    else if (y == 31)
+                        y = 0;                                // coarse Y = 0, nametable not switched
+                    else
+                        y += 1;                               // increment coarse Y
+                    m_dataAddress = (m_dataAddress & ~0x03E0) | (y << 5);
+                                                            // put coarse Y back into m_dataAddress
+                }
+            }
+            else if (m_cycle==ScanlineVisibleDots+1 && m_showSprites){
+                //Copy bits related to horizontal position
+                m_dataAddress &= ~0x41f;
+                m_dataAddress |= m_tempAddress & 0x41f;
+            }
+            else if ((m_cycle&0x7) == 0x0)
+            {   
+                //Increment/wrap coarse X
+                if ((m_dataAddress & 0x001F) == 31) // if coarse X == 31
+                {
+                    m_dataAddress &= ~0x001F;          // coarse X = 0
+                    m_dataAddress ^= 0x0400;           // switch horizontal nametable
+                }
+                else
+                    m_dataAddress += 1;                // increment coarse X
+            } 
+        }
+    }
+
+    void PPU::fetchSprite()
+    {
+        if(!m_showSprites)
+            return;
+
+        if(m_cycle==1)
+        {
+            // clear secondary OAM
+            std::fill(m_secondarySpriteMemory.begin(), m_secondarySpriteMemory.end(), 0xff);
+        }
+        else if(m_cycle == 65)
+        {
+            // TODO: evaluate follow the rule
+            int range = m_longSprites ? 16 : 8;
+
+            std::size_t j = 0;
+            for (std::size_t i = m_spriteDataAddress / 4; i < 64; ++i)
+            {
+                auto diff = (m_scanline - m_spriteMemory[i * 4]);
+                if (0 <= diff && diff < range)
+                {
+                    std::copy(m_spriteMemory.begin() + i * 4,
+                              m_spriteMemory.begin() + i * 4 + 4,
+                              m_secondarySpriteMemory.begin() + j * 4);
+                    ++j;
+                    if (j >= 8)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        else if(m_cycle >= 257 && m_cycle <= 320)
+        {
+            int spriteId = (m_cycle-257)>>3;
+            int fetch_cycle = m_cycle&0x7;
+            // ignore the garbage fetch
+            if (fetch_cycle == 0x3)
+            {
+                Byte attribute = m_secondarySpriteMemory[spriteId * 4 + 2];
+                m_spriteAttributeLatch[spriteId] = attribute;
+            }
+            else if (fetch_cycle == 0x4)
+            {
+                Byte spr_x = m_secondarySpriteMemory[spriteId * 4 + 3];
+                m_spriteCount[spriteId] = spr_x;
+            }
+            else if (fetch_cycle == 0x5 || fetch_cycle == 0x7)
+            {                            
+                Byte spr_y     = m_secondarySpriteMemory[spriteId * 4 + 0],
+                     tile      = m_secondarySpriteMemory[spriteId * 4 + 1],
+                     attribute = m_secondarySpriteMemory[spriteId * 4 + 2];
+
+                int length = (m_longSprites) ? 16 : 8;
+
+                int y_offset = (m_scanline - spr_y) % length;
+
+                if ((attribute & 0x80) != 0) //IF flipping vertically
+                    y_offset ^= (length - 1);
+
+                Address addr = 0;
+
+                if (!m_longSprites)
+                {
+                    addr = tile * 16 + y_offset;
+                    if (m_sprPage == High) addr += 0x1000;
+                }
+                else //8x16 sprites
+                {
+                    //bit-3 is one if it is the bottom tile of the sprite, multiply by two to get the next pattern
+                    y_offset = (y_offset & 7) | ((y_offset & 8) << 1);
+                    addr = (tile >> 1) * 32 + y_offset;
+                    addr |= (tile & 1) << 12; //Bank 0x1000 if bit-0 is high
+                }
+
+                if(fetch_cycle == 0x5)
+                {
+                    auto data = read(addr);
+                    if ((attribute & 0x40) == 0)
+                        data = bitReverse(data);
+                    m_spriteShifts[spriteId * 2] = data;
+                }
+                else if(fetch_cycle == 0x7)
+                {
+                    auto data = read(addr + 8);
+                    if ((attribute & 0x40) == 0)
+                        data = bitReverse(data);
+                    m_spriteShifts[spriteId * 2 + 1] = data;
+                }
+
+            }
+        }
+    }
 }
