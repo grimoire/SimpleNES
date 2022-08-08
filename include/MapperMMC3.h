@@ -1,51 +1,50 @@
 #pragma once
-#include "Mapper.h"
 #include <array>
 
-namespace sn
-{
+#include "Mapper.h"
 
-  class MapperMMC3 : public Mapper
-  {
-  public:
-    MapperMMC3(Cartridge &cart, std::function<void(void)> mirroring_cb);
+namespace sn {
 
-    Byte readPRG(Address addr);
-    void writePRG(Address addr, Byte value);
+class MapperMMC3 : public Mapper {
+ public:
+  MapperMMC3(Cartridge &cart, std::function<void(void)> mirroring_cb);
 
-    NameTableMirroring getNameTableMirroring();
-    Byte readCHR(Address addr);
-    void writeCHR(Address addr, Byte value);
+  Byte readPRG(Address addr);
+  void writePRG(Address addr, Byte value);
 
-    bool irqState();
-    void irqClear();
-    void scanline();
+  NameTableMirroring getNameTableMirroring();
+  Byte readCHR(Address addr);
+  void writeCHR(Address addr, Byte value);
 
-  private:
-    // Control variables
-    uint32_t m_targetRegister;
-    bool m_prgBankMode;
-    bool m_chrInversion;
+  bool irqState();
+  void irqClear();
+  void scanline();
 
-    uint32_t m_bankRegister[8];
+ private:
+  // Control variables
+  uint32_t m_targetRegister;
+  bool m_prgBankMode;
+  bool m_chrInversion;
 
-    Byte lastread;
-    bool bIRQActive;
-    bool bIRQEnable;
-    Address nIRQCounter;
-    Address nIRQReload;
-    bool m_irqReloadPending;
+  uint32_t m_bankRegister[8];
 
-    std::vector<Byte> m_prgRam;
-    const Byte *m_prgBank0;
-    const Byte *m_prgBank1;
-    const Byte *m_prgBank2;
-    const Byte *m_prgBank3;
+  Byte lastread;
+  bool bIRQActive;
+  bool bIRQEnable;
+  Address nIRQCounter;
+  Address nIRQReload;
+  bool m_irqReloadPending;
 
-    std::array<Address, 8> m_chrBanks;
+  std::vector<Byte> m_prgRam;
+  const Byte *m_prgBank0;
+  const Byte *m_prgBank1;
+  const Byte *m_prgBank2;
+  const Byte *m_prgBank3;
 
-    NameTableMirroring m_mirroring;
-    std::function<void(void)> m_mirroringCallback;
-  };
+  std::array<Address, 8> m_chrBanks;
 
-} // namespace sn
+  NameTableMirroring m_mirroring;
+  std::function<void(void)> m_mirroringCallback;
+};
+
+}  // namespace sn
