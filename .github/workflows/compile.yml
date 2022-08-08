@@ -31,7 +31,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y libsfml-dev libegl1-mesa libgl1-mesa-dev libglu1-mesa libglu1-mesa-dev libsfml-dev libgtest-dev binutils-dev libtool lua5.2 liblua5.2-dev liblua5.2-0 graphviz doxygen
+        sudo apt-get install -y libpthread-stubs0-dev libgl1-mesa-dev libx11-dev libxrandr-dev libfreetype6-dev libglew1.5-dev libjpeg8-dev libsndfile1-dev libopenal-dev libudev-dev libxcb-image0-dev libjpeg-dev libflac-dev
         
     - name: Build
       run: |
@@ -70,5 +70,5 @@ jobs:
     - name: Build
       run: |
         mkdir build/ && cd build/
-        cmake -DCMAKE_BUILD_TYPE=Release ..
+        cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake ..
         cmake --build .
