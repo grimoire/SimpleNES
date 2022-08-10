@@ -71,7 +71,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        vcpkg install sfml
+        vcpkg install sfml freetype libjpeg openal libogg libvorbis libflac
         
     - name: Build
       run: |
