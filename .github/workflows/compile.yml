@@ -31,12 +31,13 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt-get install -y libsfml-dev libpthread-stubs0-dev libgl1-mesa-dev libx11-dev libxrandr-dev libfreetype6-dev libglew1.5-dev libjpeg8-dev
+        sudo apt-get install -y libpthread-stubs0-dev libgl1-mesa-dev libx11-dev libxrandr-dev libfreetype6-dev libglew1.5-dev libjpeg8-dev
         sudo apt-get install -y libsndfile1-dev libopenal-dev libudev-dev libxcb-image0-dev libjpeg-dev libflac-dev libx11-xcb-dev libxcb-randr0-dev
         wget https://github.com/SFML/SFML/releases/download/2.5.1/SFML-2.5.1-sources.zip && unzip SFML-2.5.1-sources.zip
         mkdir SFML-2.5.1/build/ && cd SFML-2.5.1/build/
         cmake -DBUILD_SHARED_LIBS=OFF ..
-        make -j4 && make install
+        make -j4
+        sudo make install
 
     - name: Build
       run: |
